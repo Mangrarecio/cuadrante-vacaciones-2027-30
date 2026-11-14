@@ -8,8 +8,9 @@ Modelo
 * Verano (1 jul - 31 ago): bloques de 15 días. Cada trabajador elige SOLO su quincena de 2027;
   en los años siguientes pasa solo a la quincena siguiente (rotación cíclica en orden cronológico).
   Las 4 quincenas ocupan 60 de los 62 días: solo hay 2 días de holgura en total.
-* Invierno (16 ene - 31 may y 1 oct - 30 nov): un bloque de 15 días por trabajador y año,
-  que elige cada trabajador para cada año.
+* Invierno (16 ene - 30 jun y 1 sep - 30 nov): un bloque de 15 días por trabajador y año,
+  que elige cada trabajador para cada año. Diciembre y la 1.ª quincena de enero quedan fuera, y
+  también la quincena natural (1-15 o 16-fin de mes) en la que caen el Jueves y el Viernes Santo.
 * Solo uno de vacaciones a la vez y ninguna vacación sobre los 6 días señalados.
 * Un cuadrante es válido cuando se cumplen además todas las condiciones de motor.auditar.
 
@@ -35,9 +36,37 @@ DIAS = motor.DIAS_VAC                     # 15
 EST = {"v": "Verano", "i": "Invierno"}
 
 VENT_VERANO = (((7, 1), (8, 31)),)
-VENT_INVIERNO = (((1, 16), (5, 31)), ((10, 1), (11, 30)))
+VENT_INVIERNO = (((1, 16), (6, 30)), ((9, 1), (11, 30)))
+TXT_VENT_INVIERNO = "del 16 de enero al 30 de junio, o del 1 de septiembre al 30 de noviembre"
 
 FEST = {y: list(motor.festivos(y).values()) for y in ANIOS}
+
+
+def quincena_natural(d):
+    """Quincena natural de una fecha: del 1 al 15 o del 16 al fin de mes -> (inicio, fin)."""
+    if d.day <= 15:
+        return d.replace(day=1), d.replace(day=15)
+    ultimo = (d.replace(day=28) + TD(4)).replace(day=1) - TD(1)
+    return d.replace(day=16), ultimo
+
+
+def quincenas_semana_santa(y):
+    """Quincenas naturales en las que caen el Jueves y el Viernes Santo de un año (1 o 2)."""
+    f = motor.festivos(y)
+    return sorted({quincena_natural(f["Jueves Santo"]), quincena_natural(f["Viernes Santo"])})
+
+
+QUINCENAS_SS = {y: quincenas_semana_santa(y) for y in ANIOS}
+
+
+def _txt_quincenas_ss(y):
+    return " y ".join(f"{a:%d/%m}–{b:%d/%m}" for a, b in QUINCENAS_SS[y])
+
+
+def _toca_semana_santa(y, st):
+    """True si el bloque de 15 días que empieza en st toca la quincena de Jueves/Viernes Santo."""
+    fin = st + TD(DIAS - 1)
+    return any(st <= b and a <= fin for a, b in QUINCENAS_SS[y])
 
 
 def _starts(y, ventanas):
@@ -58,7 +87,8 @@ def _cubre_festivo(y, st):
 
 
 INVIERNO_VENTANA = {y: _starts(y, VENT_INVIERNO) for y in ANIOS}
-INVIERNO_OK = {y: [s for s in INVIERNO_VENTANA[y] if not _cubre_festivo(y, s)] for y in ANIOS}
+INVIERNO_OK = {y: [s for s in INVIERNO_VENTANA[y]
+                   if not _cubre_festivo(y, s) and not _toca_semana_santa(y, s)] for y in ANIOS}
 
 
 # --------------------------------------------------------------------------- verano
@@ -131,9 +161,10 @@ def validar_rapido(clave, inicio, bloqueados):
         return f"La fecha debe estar en {y}."
     if inicio not in INVIERNO_VENTANA[y]:
         return ("El bloque de 15 días debe quedar dentro de las ventanas de invierno: "
-                "del 16 de enero al 31 de mayo, o del 1 de octubre al 30 de noviembre.")
+                + TXT_VENT_INVIERNO + ".")
     if inicio not in INVIERNO_OK[y]:
-        return "Esas fechas cubren el Jueves o el Viernes Santo, que no pueden ser de vacaciones."
+        return (f"Esas fechas tocan la quincena del Jueves y el Viernes Santo de {y} "
+                f"({_txt_quincenas_ss(y)}), que no puede entrar en ninguna vacación.")
     for (y2, w2, s2), st in bloqueados.items():
         if s2 == "i" and y2 == y and abs((st - inicio).days) < DIAS:
             return (f"Se solapa con las vacaciones de invierno de {TRAB[w2]} "
@@ -304,12 +335,29 @@ def _buscar(bloq, rnd, presupuesto, a_fondo=True):
     return None
 
 
+def invalidas(bloqueados):
+    """
+    Elecciones ya confirmadas que NO cumplen las reglas actuales (por ejemplo, guardadas antes de
+    cambiar las ventanas). Devuelve una lista de (clave, motivo).
+    """
+    out = []
+    for clave, st in sorted(bloqueados.items(), key=lambda kv: (kv[0][0], kv[0][1], kv[0][2])):
+        otros = {k: v for k, v in bloqueados.items() if k != clave}
+        m = validar_rapido(clave, st, otros)
+        if m:
+            out.append((clave, m))
+    return out
+
+
 def completar(bloqueados, presupuesto=3.0, semilla=None, a_fondo=True):
     """
     Busca un cuadrante completo y válido que respete TODO lo confirmado.
     Devuelve {(año, w, 'v'|'i'): inicio} con los 4 veranos de cada año y los 16 inviernos,
     o None si no lo encuentra. Con a_fondo=False solo hace la pasada rápida.
+    Si algo ya confirmado incumple las reglas actuales, devuelve None.
     """
+    if invalidas(bloqueados):
+        return None
     return _buscar(bloqueados, random.Random(semilla), presupuesto, a_fondo)
 
 
@@ -326,6 +374,13 @@ def evaluar(clave, inicio, bloqueados, presupuesto=3.5):
     m = validar_rapido(clave, inicio, otros)
     if m:
         return {"estado": "error", "motivo": m}
+    malas = invalidas(otros)
+    if malas:
+        k, mm = malas[0]
+        return {"estado": "error",
+                "motivo": f"Hay una elección ya confirmada que no cumple las reglas actuales "
+                          f"({TRAB[k[1]]}, {EST[k[2]].lower()} {k[0]}): {mm} "
+                          "Hay que retirarla desde Administración antes de seguir."}
     comp = completar({**otros, clave: inicio}, presupuesto=presupuesto)
     if comp:
         return {"estado": "ok", "completo": comp}
@@ -418,8 +473,18 @@ def auditar(bl, res, lista, vac):
     add("Vacaciones de verano dentro de julio y agosto", not fuera,
         "Correcto." if not fuera else "Fuera de ventana: " + ", ".join(fuera))
     fuera = [f"{TRAB[w]} {y}" for (y, w, s), st in bl.items() if s == "i" and st not in INVIERNO_VENTANA[y]]
-    add("Vacaciones de invierno dentro del 16 ene-31 may o 1 oct-30 nov", not fuera,
+    add("Vacaciones de invierno dentro del 16 ene-30 jun o 1 sep-30 nov", not fuera,
         "Correcto." if not fuera else "Fuera de ventana: " + ", ".join(fuera))
+    dic = []
+    for (y, w, s), st in bl.items():
+        ds = [st + TD(i) for i in range(DIAS)]
+        if any(d.month == 12 or (d.month == 1 and d.day <= 15) for d in ds):
+            dic.append(f"{TRAB[w]} {y}")
+    add("Ninguna vacación en diciembre ni en la 1.ª quincena de enero", not dic,
+        "Correcto." if not dic else "Incumplen: " + ", ".join(dic))
+    ss = [f"{TRAB[w]} {y}" for (y, w, s), st in bl.items() if _toca_semana_santa(st.year, st)]
+    add("Ninguna vacación en la quincena de Jueves y Viernes Santo",
+        not ss, "Correcto." if not ss else "Incumplen: " + ", ".join(ss))
     malos = [f"{TRAB[w]} {y}" for y in ANIOS for w in range(4) if (y, w, "i") not in bl]
     add("Cada trabajador tiene 15 días de invierno cada año", not malos,
         "4 trabajadores x 4 años." if not malos else "Faltan: " + ", ".join(malos))

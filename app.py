@@ -122,22 +122,24 @@ with st.sidebar:
             st.session_state.pop("usuario", None)
             st.rerun()
     else:
-        quien = st.selectbox("¿Quién eres?", list(LETRAS) + [ADMIN])
-        esperado = (str(PIN_ADMIN) if PIN_ADMIN else None) if quien == ADMIN else \
-            (str(PINES[quien]) if PINES and quien in PINES else None)
-        necesita = esperado is not None
-        pin = st.text_input("PIN", type="password") if necesita else ""
-        if st.button("Entrar"):
+        hay_pines = bool(PINES) or bool(PIN_ADMIN)
+        with st.form("acceso"):
+            quien = st.selectbox("¿Quién eres?", list(LETRAS) + [ADMIN])
+            pin = st.text_input("PIN", type="password") if hay_pines else ""
+            entrar = st.form_submit_button("Entrar")
+        if entrar:
+            esperado = (str(PIN_ADMIN) if PIN_ADMIN else None) if quien == ADMIN else \
+                (str(PINES[quien]) if PINES and quien in PINES else None)
             if st.session_state.get("intentos", 0) >= 5:
                 st.error("Demasiados intentos fallidos. Cierra y vuelve a abrir la página.")
-            elif (not necesita) or hmac.compare_digest(pin, esperado):
+            elif esperado is None or hmac.compare_digest((pin or "").strip().encode(), esperado.strip().encode()):
                 st.session_state["usuario"] = quien
                 st.session_state["intentos"] = 0
                 st.rerun()
             else:
                 st.session_state["intentos"] = st.session_state.get("intentos", 0) + 1
-                st.error("PIN incorrecto.")
-        if not necesita:
+                st.error("PIN incorrecto. Comprueba que has elegido tu letra y que el PIN es el tuyo.")
+        if not hay_pines:
             st.caption("Modo local: sin PIN.")
     st.divider()
     st.caption(f"Datos guardados en: {ALM.nombre}")
@@ -244,8 +246,8 @@ def pestana_mis_vacaciones():
 
     # ---- invierno
     st.markdown("### ❄️ Invierno: 15 días cada año")
-    st.caption("Ventanas: del 16 de enero al 31 de mayo y del 1 de octubre al 30 de noviembre. "
-               "No pueden cubrir el Jueves ni el Viernes Santo.")
+    st.caption("Ventanas: " + R.TXT_VENT_INVIERNO + ". Diciembre y la 1.ª quincena de enero no valen, "
+               "y tampoco la quincena en la que caen el Jueves y el Viernes Santo.")
     for y in R.ANIOS:
         ck = (y, w, "i")
         with st.expander(f"Invierno {y}", expanded=(y == R.ANIO0 or ck not in bloq)):
@@ -268,6 +270,13 @@ def pestana_mis_vacaciones():
                     if st.button("Comprobar y confirmar", key=f"ok_{y}"):
                         tramitar(ck, d, origen)
             mostrar_mensaje(ck, bloq, origen)
+
+
+def avisar_invalidas(bloq):
+    """Avisa de elecciones ya guardadas que no cumplen las reglas actuales."""
+    for k, m in R.invalidas(bloq):
+        st.warning(f"⚠️ {LETRAS[k[1]]} · {'verano' if k[2] == 'v' else 'invierno'} {k[0]} "
+                   f"({rango(bloq[k])}) ya no cumple las reglas: {m} Hay que retirarla y volver a elegir.")
 
 
 def pestana_estado():
@@ -298,6 +307,7 @@ def pestana_estado():
             fila[L] = f"{bloq[k]:%d/%m}–{bloq[k] + TD(R.DIAS - 1):%d/%m}" if k in bloq else "⏳ pendiente"
         filas_i.append(fila)
     st.dataframe(pd.DataFrame(filas_i), hide_index=True)
+    avisar_invalidas(bloq)
     falta = R.faltan(bloq)
     if falta:
         por = {L: sum(1 for k in falta if k[1] == w) for w, L in enumerate(LETRAS)}
@@ -454,6 +464,7 @@ def pestana_admin():
             f"{LETRAS[k[1]]} · {'Verano' if k[2] == 'v' else 'Invierno'} {k[0]} · {rango(bloq[k])}"))
         if st.button("Retirar esta elección"):
             retirar(k)
+    avisar_invalidas(bloq)
     st.markdown("**Completar automáticamente lo que falta**")
     falta = R.faltan(bloq)
     st.caption(f"Faltan {len(falta)} elecciones. Se rellenan con un cuadrante válido que respeta todo lo confirmado.")
@@ -471,8 +482,12 @@ def pestana_admin():
     st.markdown("**Comprobar que todo lo confirmado sigue cuadrando**")
     if st.button("Comprobar ahora"):
         with st.spinner("Comprobando…"):
-            ok = R.completar(bloq, presupuesto=10) is not None
-        (st.success if ok else st.error)("Todo cuadra." if ok else "No se encuentra un cuadrante completo.")
+            malas = R.invalidas(bloq)
+            ok = (not malas) and R.completar(bloq, presupuesto=10) is not None
+        if malas:
+            st.error("Hay elecciones que incumplen las reglas (arriba): retíralas y vuelve a elegir.")
+        else:
+            (st.success if ok else st.error)("Todo cuadra." if ok else "No se encuentra un cuadrante completo.")
     st.markdown("**Borrar todo**")
     if st.checkbox("Entiendo que se borrarán todas las elecciones confirmadas") and st.button("Borrar todo"):
         ALM.borrar_todo()
@@ -488,7 +503,8 @@ st.caption("4 trabajadores (A, B, C, D) · guardias de 24 h · del 01/01/2027 al
 with st.expander("ℹ️ Cómo funciona"):
     st.markdown(
         "- **Verano** (julio y agosto): cada trabajador elige su quincena de 2027 y rota solo a la siguiente cada año.\n"
-        "- **Invierno** (16 ene-31 may y 1 oct-30 nov): cada trabajador elige 15 días para cada año.\n"
+        "- **Invierno** (16 ene-30 jun y 1 sep-30 nov, sin la quincena del Jueves y Viernes Santo): cada trabajador "
+        "elige 15 días para cada año. Diciembre no entra en ninguna vacación.\n"
         "- Solo uno de vacaciones a la vez. Fuera de vacaciones: 24 h de trabajo y 3 días libres; con alguien de "
         "vacaciones, 24 h y 2 días libres.\n"
         "- Navidad (24, 25 y 31 dic y 1 ene) y Semana Santa (Jueves y Viernes Santo) rotan entre los 4 trabajadores.\n"
