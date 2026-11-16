@@ -3,6 +3,7 @@
 exportar.py
 Genera el Excel del cuadrante (un libro con una hoja por año, vacaciones, festivos, resumen y auditoría).
 """
+import datetime as dt
 import io
 
 from openpyxl import Workbook
@@ -45,10 +46,14 @@ def _vertical_a_pagina(ws):
     ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
 
 
-def _hoja_anual(wb, anio, res, provisional=False):
+def _titulo_unidad(unidad):
+    return f"{unidad} · " if unidad else ""
+
+
+def _hoja_anual(wb, anio, res, provisional=False, unidad=""):
     ws = wb.create_sheet(f"Cuadrante {anio}")
     letras, fest = motor.matriz_anual(res, anio)
-    ws["A1"] = f"Cuadrante de guardias {anio} · guardias de 24 h · trabajadores A, B, C y D"
+    ws["A1"] = f"{_titulo_unidad(unidad)}Cuadrante de guardias {anio} · guardias de 24 h · trabajadores A, B, C y D"
     ws["A1"].font = Font(bold=True, size=14)
     ws.merge_cells("A1:N1")
     if provisional:
@@ -206,17 +211,43 @@ def _hoja_auditoria(wb, aud):
     _anchos(ws, [70, 11, 90])
 
 
-def crear_libro(res, bloques, aud, anios=None, provisional=False):
-    """Devuelve los bytes de un .xlsx con las hojas de los años indicados (por defecto, todos)."""
+def _hoja_portada(wb, unidad, localidad, ambulancia, anios, provisional):
+    ws = wb.create_sheet("Portada", 0)
+    ws["A1"] = "Cuadrante de vacaciones y guardias"
+    ws["A1"].font = Font(bold=True, size=18)
+    ws["A3"] = unidad
+    ws["A3"].font = Font(bold=True, size=26, color="1F4E79")
+    filas = [("Ambulancia", ambulancia), ("Localidad", localidad),
+             ("Periodo", f"{anios[0]}-{anios[-1]}" if len(anios) > 1 else str(anios[0])),
+             ("Estado", "PROVISIONAL (aún no lo han confirmado todos los trabajadores)" if provisional
+              else "Definitivo"),
+             ("Generado", f"{dt.datetime.now():%d/%m/%Y %H:%M}")]
+    for r, (k, v) in enumerate(filas, start=5):
+        ws.cell(row=r, column=1, value=k).font = Font(bold=True)
+        c = ws.cell(row=r, column=2, value=v)
+        if k == "Estado" and provisional:
+            c.font = Font(bold=True, color="C00000")
+    _anchos(ws, [16, 70])
+
+
+def crear_libro(res, bloques, aud, anios=None, provisional=False, unidad="", localidad="", ambulancia=""):
+    """Devuelve los bytes de un .xlsx con las hojas de los años indicados (por defecto, todos).
+    Con «unidad» (p. ej. 'UVI 1 de Martos') se añade una portada y el nombre sale en cada hoja anual."""
     anios = list(anios or motor.ANIOS)
     wb = Workbook()
     wb.remove(wb.active)
     for y in anios:
-        _hoja_anual(wb, y, res, provisional)
+        _hoja_anual(wb, y, res, provisional, unidad)
     _hoja_vacaciones(wb, bloques, anios)
     _hoja_festivos(wb, res, anios)
     _hoja_resumen(wb, res, anios)
     _hoja_auditoria(wb, aud)
+    if unidad:
+        _hoja_portada(wb, unidad, localidad, ambulancia, anios, provisional)
+        wb.properties.title = f"Cuadrante de vacaciones y guardias · {unidad}"
+        for ws in wb.worksheets:
+            ws.oddHeader.center.text = unidad
+            ws.oddFooter.center.text = "&A · página &P de &N"
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
